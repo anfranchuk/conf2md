@@ -25,6 +25,21 @@ python export_confluence.py --url "https://confluence.example.com" --username "l
 python export_html_to_md.py --input "C:\path\to\html-export" --output "C:\path\to\md-out"
 ```
 
+## Вариант 3: локальный просмотр HTML через FastAPI
+
+Поднимает локальный сервер и отдаёт HTML-экспорт из папки `Service-description`.
+
+Запуск:
+```
+uvicorn service_app:app --reload
+```
+
+Если папка называется иначе:
+```
+set SERVICE_DESCRIPTION_DIR=C:\path\to\html-export
+uvicorn service_app:app --reload
+```
+
 ### Примечания
 
 - Ссылки на страницы переписываются на локальные `.md`.
