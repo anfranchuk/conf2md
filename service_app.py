@@ -16,8 +16,14 @@ def create_app() -> FastAPI:
     if not export_dir.exists():
         raise RuntimeError(f"Export directory not found: {export_dir}")
 
-    app.mount("/", StaticFiles(directory=export_dir, html=True), name="static")
+    app.mount("/", StaticFiles(directory=str(export_dir), html=True), name="static")
     return app
 
 
 app = create_app()
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("service_app:app", host="127.0.0.1", port=8000, reload=False)

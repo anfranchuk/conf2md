@@ -29,15 +29,21 @@ python export_html_to_md.py --input "C:\path\to\html-export" --output "C:\path\t
 
 Поднимает локальный сервер и отдаёт HTML-экспорт из папки `Service-description`.
 
-Запуск:
+Запуск (Windows):
 ```
-uvicorn service_app:app --reload
+python service_app.py
 ```
 
-Если папка называется иначе:
+Если папка называется иначе (Windows, CMD):
 ```
 set SERVICE_DESCRIPTION_DIR=C:\path\to\html-export
-uvicorn service_app:app --reload
+python service_app.py
+```
+
+Если папка называется иначе (Windows, PowerShell):
+```
+$env:SERVICE_DESCRIPTION_DIR="C:\path\to\html-export"
+python service_app.py
 ```
 
 ### Примечания
