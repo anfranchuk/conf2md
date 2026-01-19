@@ -4,6 +4,7 @@ import re
 import shutil
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+from urllib.parse import parse_qs, unquote, urlparse
 
 import html2text
 from bs4 import BeautifulSoup
@@ -31,10 +32,23 @@ def get_main_content(html: str) -> str:
         soup.find(id="main-content")
         or soup.find("div", class_="wiki-content")
         or soup.find("div", class_="content")
+        or soup.find(id="content")
+        or soup.find("div", class_="pageSection")
     )
     if main is None:
         main = soup.body or soup
     return str(main)
+
+
+def extract_page_id(html: str) -> Optional[str]:
+    soup = BeautifulSoup(html, "html.parser")
+    meta = soup.find("meta", attrs={"name": "ajs-page-id"})
+    if meta and meta.get("content"):
+        return meta["content"].strip()
+    data = soup.find(attrs={"data-page-id": True})
+    if data:
+        return str(data.get("data-page-id")).strip()
+    return None
 
 
 def build_html_map(input_dir: Path, output_dir: Path) -> Dict[str, Path]:
@@ -52,7 +66,25 @@ def build_html_map(input_dir: Path, output_dir: Path) -> Dict[str, Path]:
     return mapping
 
 
-def rewrite_links(html: str, html_map: Dict[str, Path], current_html: Path, input_dir: Path) -> str:
+def build_page_id_map(input_dir: Path, html_map: Dict[str, Path]) -> Dict[str, Path]:
+    page_id_map: Dict[str, Path] = {}
+    for rel, md_path in html_map.items():
+        html_path = input_dir / rel
+        html = html_path.read_text(encoding="utf-8", errors="ignore")
+        page_id = extract_page_id(html)
+        if page_id:
+            page_id_map[page_id] = md_path
+    return page_id_map
+
+
+def rewrite_links(
+    html: str,
+    html_map: Dict[str, Path],
+    page_id_map: Dict[str, Path],
+    current_html: Path,
+    current_md: Path,
+    input_dir: Path,
+) -> str:
     soup = BeautifulSoup(html, "html.parser")
 
     def normalize_href(href: str) -> Tuple[str, Optional[str]]:
@@ -70,7 +102,23 @@ def rewrite_links(html: str, html_map: Dict[str, Path], current_html: Path, inpu
             continue
 
         base, frag = normalize_href(url)
-        base_path = (current_html.parent / base).resolve()
+        parsed = urlparse(base)
+
+        # Handle viewpage.action?pageId=123
+        if parsed.query:
+            qs = parse_qs(parsed.query)
+            page_id = qs.get("pageId", [None])[0]
+            if page_id and page_id in page_id_map:
+                md_path = page_id_map[page_id]
+                new_rel = os.path.relpath(md_path, current_md.parent)
+                new_rel = new_rel.replace("\\", "/")
+                tag[attr] = new_rel + (frag or "")
+                continue
+
+        if parsed.scheme or parsed.netloc:
+            continue
+
+        base_path = (current_html.parent / unquote(parsed.path)).resolve()
         try:
             rel = base_path.relative_to(input_dir).as_posix()
         except ValueError:
@@ -78,12 +126,12 @@ def rewrite_links(html: str, html_map: Dict[str, Path], current_html: Path, inpu
 
         if rel in html_map:
             md_path = html_map[rel]
-            new_rel = os.path.relpath(md_path, (current_html.parent).resolve())
+            new_rel = os.path.relpath(md_path, current_md.parent)
             new_rel = new_rel.replace("\\", "/")
             tag[attr] = new_rel + (frag or "")
         else:
             # For non-HTML files keep relative path
-            new_rel = os.path.relpath(base_path, (current_html.parent).resolve())
+            new_rel = os.path.relpath(base_path, current_md.parent)
             new_rel = new_rel.replace("\\", "/")
             tag[attr] = new_rel + (frag or "")
 
@@ -94,12 +142,13 @@ def convert_html_file(
     src_path: Path,
     dst_path: Path,
     html_map: Dict[str, Path],
+    page_id_map: Dict[str, Path],
     input_dir: Path,
     converter: html2text.HTML2Text,
 ) -> None:
     html = src_path.read_text(encoding="utf-8", errors="ignore")
     main_html = get_main_content(html)
-    main_html = rewrite_links(main_html, html_map, src_path, input_dir)
+    main_html = rewrite_links(main_html, html_map, page_id_map, src_path, dst_path, input_dir)
     md = converter.handle(main_html).strip() + "\n"
 
     dst_path.parent.mkdir(parents=True, exist_ok=True)
@@ -137,10 +186,11 @@ def main() -> int:
 
     converter = make_converter()
     html_map = build_html_map(input_dir, output_dir)
+    page_id_map = build_page_id_map(input_dir, html_map)
 
     for rel, md_path in html_map.items():
         src = input_dir / rel
-        convert_html_file(src, md_path, html_map, input_dir, converter)
+        convert_html_file(src, md_path, html_map, page_id_map, input_dir, converter)
 
     copy_non_html_files(input_dir, output_dir)
     return 0
