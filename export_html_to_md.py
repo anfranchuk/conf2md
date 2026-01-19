@@ -67,25 +67,55 @@ def extract_page_id(html: str) -> Optional[str]:
     return None
 
 
+LINK_PATTERN = re.compile(r"(\.html?$|viewpage\.action)", re.IGNORECASE)
+
+
 def find_tree_root(soup: BeautifulSoup) -> Optional[BeautifulSoup]:
+    selectors = [
+        "#page-tree",
+        "#page-tree-container",
+        "#pagetree",
+        ".pagetree",
+        ".page-tree",
+        "#navigation",
+        "#leftNav",
+        "#sidebar",
+        "#content",
+        "#main-content",
+        "#main",
+    ]
+    for selector in selectors:
+        container = soup.select_one(selector)
+        if container:
+            ul = container.find("ul")
+            if ul:
+                return ul
+
+    for tag in soup.find_all(class_=re.compile(r"pagetree|page-tree", re.IGNORECASE)):
+        ul = tag.find("ul")
+        if ul:
+            return ul
+
     candidates = soup.find_all("ul")
     best = None
     best_count = 0
     for ul in candidates:
-        links = ul.find_all("a", href=re.compile(r"\.html?$", re.IGNORECASE))
+        links = ul.find_all("a", href=LINK_PATTERN)
         if len(links) > best_count:
             best_count = len(links)
             best = ul
+    if best_count == 0:
+        return None
     return best
 
 
 def parse_tree(ul: BeautifulSoup) -> List[TreeNode]:
     nodes: List[TreeNode] = []
     for li in ul.find_all("li", recursive=False):
-        link = li.find("a", href=re.compile(r"\.html?$", re.IGNORECASE))
+        link = li.find("a", href=LINK_PATTERN)
         title = link.get_text(strip=True) if link else li.get_text(strip=True)
         href = link.get("href") if link else None
-        child_ul = li.find("ul", recursive=False)
+        child_ul = li.find("ul", recursive=False) or li.find("ul")
         children = parse_tree(child_ul) if child_ul else []
         if title or href:
             nodes.append(TreeNode(title=title or "page", href=href, children=children))
@@ -133,18 +163,29 @@ def assign_tree_paths(
         used_names[name] = count
         if count > 1:
             name = f"{name}-{count}"
-        node_dir = base_dir / name
-        if node.href:
-            parsed = urlparse(node.href)
-            if not parsed.scheme and not parsed.netloc:
-                rel_path = (input_dir / unquote(parsed.path)).resolve()
-                try:
-                    rel = rel_path.relative_to(input_dir).as_posix()
-                    mapping[rel] = node_dir / "index.md"
-                except ValueError:
-                    pass
-        if node.children:
+        has_children = bool(node.children)
+        if has_children:
+            node_dir = base_dir / name
+            if node.href:
+                parsed = urlparse(node.href)
+                if not parsed.scheme and not parsed.netloc:
+                    rel_path = (input_dir / unquote(parsed.path)).resolve()
+                    try:
+                        rel = rel_path.relative_to(input_dir).as_posix()
+                        mapping[rel] = node_dir / "index.md"
+                    except ValueError:
+                        pass
             assign_tree_paths(node.children, node_dir, mapping, input_dir)
+        else:
+            if node.href:
+                parsed = urlparse(node.href)
+                if not parsed.scheme and not parsed.netloc:
+                    rel_path = (input_dir / unquote(parsed.path)).resolve()
+                    try:
+                        rel = rel_path.relative_to(input_dir).as_posix()
+                        mapping[rel] = base_dir / f"{name}.md"
+                    except ValueError:
+                        pass
 
 
 def build_page_id_map(input_dir: Path, html_map: Dict[str, Path]) -> Dict[str, Path]:
