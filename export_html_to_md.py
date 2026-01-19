@@ -2,8 +2,9 @@ import argparse
 import os
 import re
 import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
 import html2text
@@ -20,6 +21,14 @@ def make_converter() -> html2text.HTML2Text:
     converter.unicode_snob = True
     converter.ignore_tables = False
     return converter
+
+
+def slugify(text: str) -> str:
+    text = text.strip().lower()
+    text = re.sub(r"[^a-z0-9а-яё\-_ ]+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", "-", text)
+    text = re.sub(r"-{2,}", "-", text)
+    return text or "page"
 
 
 def get_main_content(html: str) -> str:
@@ -40,6 +49,13 @@ def get_main_content(html: str) -> str:
     return str(main)
 
 
+@dataclass
+class TreeNode:
+    title: str
+    href: Optional[str]
+    children: List["TreeNode"] = field(default_factory=list)
+
+
 def extract_page_id(html: str) -> Optional[str]:
     soup = BeautifulSoup(html, "html.parser")
     meta = soup.find("meta", attrs={"name": "ajs-page-id"})
@@ -51,19 +67,84 @@ def extract_page_id(html: str) -> Optional[str]:
     return None
 
 
+def find_tree_root(soup: BeautifulSoup) -> Optional[BeautifulSoup]:
+    candidates = soup.find_all("ul")
+    best = None
+    best_count = 0
+    for ul in candidates:
+        links = ul.find_all("a", href=re.compile(r"\.html?$", re.IGNORECASE))
+        if len(links) > best_count:
+            best_count = len(links)
+            best = ul
+    return best
+
+
+def parse_tree(ul: BeautifulSoup) -> List[TreeNode]:
+    nodes: List[TreeNode] = []
+    for li in ul.find_all("li", recursive=False):
+        link = li.find("a", href=re.compile(r"\.html?$", re.IGNORECASE))
+        title = link.get_text(strip=True) if link else li.get_text(strip=True)
+        href = link.get("href") if link else None
+        child_ul = li.find("ul", recursive=False)
+        children = parse_tree(child_ul) if child_ul else []
+        if title or href:
+            nodes.append(TreeNode(title=title or "page", href=href, children=children))
+    return nodes
+
+
 def build_html_map(input_dir: Path, output_dir: Path) -> Dict[str, Path]:
     mapping: Dict[str, Path] = {}
+
+    index_path = input_dir / "index.html"
+    if index_path.exists():
+        index_html = index_path.read_text(encoding="utf-8", errors="ignore")
+        soup = BeautifulSoup(index_html, "html.parser")
+        tree_root = find_tree_root(soup)
+        if tree_root:
+            nodes = parse_tree(tree_root)
+            assign_tree_paths(nodes, output_dir, mapping, input_dir)
+
+    # Fallbacks / orphans
     for html_path in input_dir.rglob("*.html"):
         rel = html_path.relative_to(input_dir).as_posix()
-        target = output_dir / html_path.relative_to(input_dir)
-        target = target.with_suffix(".md")
-        mapping[rel] = target
+        if rel in mapping:
+            continue
+        target = output_dir / "_orphans" / html_path.relative_to(input_dir)
+        mapping[rel] = target.with_suffix(".md")
     for html_path in input_dir.rglob("*.htm"):
         rel = html_path.relative_to(input_dir).as_posix()
-        target = output_dir / html_path.relative_to(input_dir)
-        target = target.with_suffix(".md")
-        mapping[rel] = target
+        if rel in mapping:
+            continue
+        target = output_dir / "_orphans" / html_path.relative_to(input_dir)
+        mapping[rel] = target.with_suffix(".md")
     return mapping
+
+
+def assign_tree_paths(
+    nodes: List[TreeNode],
+    base_dir: Path,
+    mapping: Dict[str, Path],
+    input_dir: Path,
+) -> None:
+    used_names: Dict[str, int] = {}
+    for node in nodes:
+        name = slugify(node.title)
+        count = used_names.get(name, 0) + 1
+        used_names[name] = count
+        if count > 1:
+            name = f"{name}-{count}"
+        node_dir = base_dir / name
+        if node.href:
+            parsed = urlparse(node.href)
+            if not parsed.scheme and not parsed.netloc:
+                rel_path = (input_dir / unquote(parsed.path)).resolve()
+                try:
+                    rel = rel_path.relative_to(input_dir).as_posix()
+                    mapping[rel] = node_dir / "index.md"
+                except ValueError:
+                    pass
+        if node.children:
+            assign_tree_paths(node.children, node_dir, mapping, input_dir)
 
 
 def build_page_id_map(input_dir: Path, html_map: Dict[str, Path]) -> Dict[str, Path]:
